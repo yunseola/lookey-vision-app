@@ -1,0 +1,126 @@
+package com.project.lookey.OAuth.Controller;
+
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
+import com.project.lookey.OAuth.Entity.User;
+import com.project.lookey.OAuth.Repository.UserRepository;
+import com.project.lookey.OAuth.Service.Redis.JwtRedisService;
+import com.project.lookey.OAuth.Service.google.GoogleVerifierService;
+import com.project.lookey.OAuth.Service.jwt.JwtProvider;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/auth")
+@RequiredArgsConstructor
+public class AuthController {
+
+    private final GoogleVerifierService googleVerifierService;
+    private final UserRepository userRepository;
+    private final JwtProvider jwtProvider;
+    private final JwtRedisService jwtRedisService;
+
+    @PostMapping("/google")
+    @Operation(summary = "Google 로그인", security = @SecurityRequirement(name = "bearerAuth"))
+    public ResponseEntity<Map<String, Object>> loginWithGoogle(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader
+    ) {
+
+        if (!authorizationHeader.startsWith("Bearer ")) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", 400,
+                    "message", "Authorization 헤더 형식이 잘못되었습니다."
+            ));
+        }
+
+        String idToken = authorizationHeader.substring(7);
+        GoogleIdToken.Payload payload;
+
+        try {
+            payload = googleVerifierService.verify(idToken);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(Map.of(
+                    "status", 500,
+                    "message", "Google OAuth 검증 실패: " + e.getMessage()
+            ));
+        }
+
+        String email = payload.getEmail();
+        String name = (String) payload.get("name");
+
+        // 유저가 없으면 db에 저장
+        User user;
+        try {
+            user = userRepository.findByEmail(email)
+                    .orElseGet(() -> userRepository.save(User.builder()
+                            .email(email)
+                            .name(name)
+                            .build()));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(Map.of(
+                    "status", 500,
+                    "message", "DB 저장 실패: " + e.getMessage()
+            ));
+        }
+
+        String jwt = jwtProvider.createToken(user.getId(), user.getEmail());
+        String refreshToken = jwtProvider.createRefreshToken(user.getId());
+
+        jwtRedisService.saveRefreshToken(refreshToken, user.getId(), 7 * 24 * 60 * 60L);
+
+        Map<String, Object> data = Map.of(
+                "jwtToken", jwt,
+                "userId", user.getId()
+        );
+
+        Map<String, Object> response = Map.of(
+                "message", "로그인 성공",
+                "data", data
+        );
+
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<Map<String, Object>> refreshToken(
+            @RequestHeader("Authorization") String refreshTokenHeader
+    ) {
+        if (!refreshTokenHeader.startsWith("Bearer ")) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Invalid Header"));
+        }
+
+        String refreshToken = refreshTokenHeader.substring(7);
+
+        //  userId 추출
+        Integer userId;
+        try {
+            userId = jwtProvider.getUserIdFromToken(refreshToken);
+        } catch (Exception e) {
+            return ResponseEntity.status(401).body(Map.of("message", "Invalid Token"));
+        }
+
+        // Redis 확인
+        String storedToken = jwtRedisService.getRefreshToken(userId);
+        if (storedToken == null || !storedToken.equals(refreshToken)) {
+            return ResponseEntity.status(401).body(Map.of("message", "Refresh Token invalid"));
+        }
+
+        // 새 Access Token 발급
+        String newAccessToken = jwtProvider.createToken(
+                userId,
+                userRepository.findById(userId).get().getEmail());
+
+        return ResponseEntity.ok(Map.of("jwtToken", newAccessToken));
+    }
+
+}

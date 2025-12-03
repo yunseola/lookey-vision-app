@@ -1,0 +1,64 @@
+networks:
+  shared-network:
+    driver: bridge
+
+services:
+  mysql-shared:
+    image: mysql:8.0
+    container_name: mysql-shared
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-shared-data:/var/lib/mysql
+    networks:
+      - shared-network
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  redis-shared:
+    image: redis:7-alpine
+    container_name: redis-shared
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-shared-data:/data
+    networks:
+      - shared-network
+    restart: unless-stopped
+
+  springapp-prod:
+    build: .
+    container_name: springapp-prod
+    ports:
+      - "8081:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL}
+      - SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
+      - SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD}
+      - SPRING_DATA_REDIS_HOST=${SPRING_DATA_REDIS_HOST}
+      - SPRING_DATA_REDIS_PORT=${SPRING_DATA_REDIS_PORT}
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=${SPRING_JPA_HIBERNATE_DDL_AUTO_PROD}
+      - SPRING_JPA_SHOW_SQL=${SPRING_JPA_SHOW_SQL_PROD}
+      - LOGGING_LEVEL_COM_PROJECT_LOOKEY=${LOGGING_LEVEL_COM_PROJECT_LOOKEY_PROD}
+      - LOGGING_LEVEL_ROOT=${LOGGING_LEVEL_ROOT_PROD}
+      - GOOGLE_OAUTH_ID=${GOOGLE_OAUTH_ID}
+      - GOOGLE_OAUTH_SECRET=${GOOGLE_OAUTH_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+      - GOOGLE_REDIRECT_URI=http://j13e101.p.ssafy.io:8081/login/oauth2/code/google
+      - GOOGLE_CALLBACK_URL=http://j13e101.p.ssafy.io:8081/auth/google/callback
+    depends_on:
+      - mysql-shared
+      - redis-shared
+    networks:
+      - shared-network
+    restart: unless-stopped
+
+volumes:
+  mysql-shared-data:
+  redis-shared-data:
